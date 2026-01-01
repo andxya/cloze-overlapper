@@ -1,0 +1,13 @@
+{
+    "name": "Cloze Overlapper AXY-edit",
+    "package": "cloze_overlapper",
+    "ankiweb_id": "",
+    "author": "saiyr, AXY",
+    "version": "v1.1.0",
+    "homepage": "https://github.com/saiyr/cloze-overlapper",
+    "conflicts": [
+        "1784155610",
+        "969733775"
+    ],
+    "mod": 1727578351
+}
