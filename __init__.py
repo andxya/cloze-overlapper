@@ -117,9 +117,10 @@ def initializeAddon():
         if utils.can_override_scheduler():
             from .sched import initializeScheduler
             initializeScheduler()
-        # Regenerate all overlapping clozes on startup
-        from .batch import regenerateAllClozes
-        # Use timer to run after everything else is loaded
+        # Initialize batch regeneration (on startup + on note updates)
+        from .batch import initializeBatchRegeneration, regenerateAllClozes
+        initializeBatchRegeneration()
+        # Also run a full check on startup after a delay
         mw.progress.timer(2000, regenerateAllClozes, False)
 
     addHook("profileLoaded", delayedInit)

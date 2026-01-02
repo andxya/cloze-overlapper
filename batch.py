@@ -140,12 +140,78 @@ def regenerateAllClozes():
                 (f" ({errors} errors)" if errors else ""), period=3000)
 
 
+def regenerateSingleNote(note):
+    """Regenerate overlapping clozes for a single note if Original field changed"""
+    flds = config["synced"]["flds"]
+
+    # Check if it's a valid OLC model
+    if not checkModel(note.model(), fields=True, notify=False):
+        return False
+
+    # Compute current hash
+    nid_str = str(note.id)
+    stored_hashes = _load_hashes()
+    current_hash = _compute_note_hash(note, flds)
+
+    # Skip if hash unchanged
+    if nid_str in stored_hashes and stored_hashes[nid_str] == current_hash:
+        return False
+
+    # Regenerate clozes silently
+    overlapper = ClozeOverlapper(note, silent=True)
+    ret, total = overlapper.add()
+
+    if ret:
+        # Update stored hash
+        stored_hashes[nid_str] = current_hash
+        _save_hashes(stored_hashes)
+        print(f"Cloze Overlapper: Regenerated {total} clozes for note {note.id}")
+        return True
+
+    return False
+
+
+def onNoteUpdate(col, note, *args, **kwargs):
+    """Hook called when a note is updated - regenerate if needed"""
+    try:
+        # Check if it's an OLC model
+        olc_models = config["synced"].get("olmdls", [OLC_MODEL])
+        model_name = note.model()["name"]
+
+        if model_name in olc_models:
+            regenerateSingleNote(note)
+    except Exception as e:
+        print(f"Cloze Overlapper: Error in onNoteUpdate: {e}")
+
+
 def initializeBatchRegeneration():
-    """Initialize batch regeneration to run on startup"""
+    """Initialize batch regeneration to run on startup and on note updates"""
     from anki.hooks import addHook
-    
+
     def onProfileLoaded():
         # Run regeneration after a short delay to let Anki fully load
         mw.progress.timer(1000, regenerateAllClozes, False)
-    
+
     addHook("profileLoaded", onProfileLoaded)
+
+    # Hook into note updates to auto-regenerate when Original field changes
+    # This catches updates from AnkiConnect (Obsidian sync)
+    try:
+        from anki.hooks import wrap
+        from anki.notes import Note
+
+        # Wrap the flush method to detect note saves
+        original_flush = Note.flush
+
+        def wrapped_flush(self, *args, **kwargs):
+            result = original_flush(self, *args, **kwargs)
+            try:
+                onNoteUpdate(mw.col, self)
+            except Exception as e:
+                print(f"Cloze Overlapper: Error in flush hook: {e}")
+            return result
+
+        Note.flush = wrapped_flush
+        print("Cloze Overlapper: Initialized auto-regeneration on note updates")
+    except Exception as e:
+        print(f"Cloze Overlapper: Could not initialize note update hook: {e}")
