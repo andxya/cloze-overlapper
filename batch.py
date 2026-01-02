@@ -55,6 +55,35 @@ def _save_hashes(hashes):
         print(f"Error saving hash cache: {e}")
 
 
+def _needs_regeneration(note, flds, stored_hashes):
+    """Check if a note needs regeneration.
+
+    Returns True if:
+    - Original field hash changed
+    - OR Original field has content but Full field is empty
+    """
+    nid_str = str(note.id)
+
+    # Get field values
+    original = note.get(flds["og"], "").strip()
+    full = note.get(flds["fl"], "").strip()
+
+    # If Original is empty, nothing to regenerate
+    if not original:
+        return False
+
+    # Check if Full field is empty but Original has content
+    if not full:
+        return True
+
+    # Check if hash changed
+    current_hash = _compute_note_hash(note, flds)
+    if nid_str not in stored_hashes or stored_hashes[nid_str] != current_hash:
+        return True
+
+    return False
+
+
 def _compute_note_hash(note, flds):
     """Compute hash of note's input fields (Original + Settings)"""
     original = note.get(flds["og"], "")
@@ -64,7 +93,12 @@ def _compute_note_hash(note, flds):
 
 
 def regenerateAllClozes():
-    """Regenerate overlapping clozes only for notes that changed"""
+    """Regenerate overlapping clozes for notes that need it.
+
+    Regenerates if:
+    - Original field hash changed since last regeneration
+    - OR Original field has content but Full field is empty
+    """
 
     col = mw.col
     if not col:
@@ -89,7 +123,7 @@ def regenerateAllClozes():
     # Load stored hashes
     stored_hashes = _load_hashes()
 
-    # Process each note - only if changed
+    # Process each note - only if changed or Full is empty
     updated = 0
     skipped = 0
     errors = 0
@@ -105,12 +139,8 @@ def regenerateAllClozes():
                 if not checkModel(note.model(), fields=True, notify=False):
                     continue
 
-                # Compute current hash
-                nid_str = str(nid)
-                current_hash = _compute_note_hash(note, flds)
-
-                # Skip if hash unchanged
-                if nid_str in stored_hashes and stored_hashes[nid_str] == current_hash:
+                # Check if regeneration is needed
+                if not _needs_regeneration(note, flds, stored_hashes):
                     skipped += 1
                     continue
 
@@ -121,6 +151,8 @@ def regenerateAllClozes():
                 if ret:
                     updated += 1
                     # Update stored hash
+                    nid_str = str(nid)
+                    current_hash = _compute_note_hash(note, flds)
                     stored_hashes[nid_str] = current_hash
 
             except Exception as e:
@@ -141,20 +173,22 @@ def regenerateAllClozes():
 
 
 def regenerateSingleNote(note):
-    """Regenerate overlapping clozes for a single note if Original field changed"""
+    """Regenerate overlapping clozes for a single note if needed.
+
+    Regenerates if:
+    - Original field hash changed
+    - OR Original field has content but Full field is empty
+    """
     flds = config["synced"]["flds"]
 
     # Check if it's a valid OLC model
     if not checkModel(note.model(), fields=True, notify=False):
         return False
 
-    # Compute current hash
-    nid_str = str(note.id)
     stored_hashes = _load_hashes()
-    current_hash = _compute_note_hash(note, flds)
 
-    # Skip if hash unchanged
-    if nid_str in stored_hashes and stored_hashes[nid_str] == current_hash:
+    # Check if regeneration is needed
+    if not _needs_regeneration(note, flds, stored_hashes):
         return False
 
     # Regenerate clozes silently
@@ -163,6 +197,8 @@ def regenerateSingleNote(note):
 
     if ret:
         # Update stored hash
+        nid_str = str(note.id)
+        current_hash = _compute_note_hash(note, flds)
         stored_hashes[nid_str] = current_hash
         _save_hashes(stored_hashes)
         print(f"Cloze Overlapper: Regenerated {total} clozes for note {note.id}")
@@ -171,47 +207,133 @@ def regenerateSingleNote(note):
     return False
 
 
-def onNoteUpdate(col, note, *args, **kwargs):
-    """Hook called when a note is updated - regenerate if needed"""
-    try:
-        # Check if it's an OLC model
-        olc_models = config["synced"].get("olmdls", [OLC_MODEL])
-        model_name = note.model()["name"]
+def regenerateNoteById(note_id):
+    """Regenerate overlapping clozes for a note by its ID"""
+    col = mw.col
+    if not col:
+        return False
 
-        if model_name in olc_models:
-            regenerateSingleNote(note)
+    try:
+        note = col.getNote(note_id)
+        return regenerateSingleNote(note)
     except Exception as e:
-        print(f"Cloze Overlapper: Error in onNoteUpdate: {e}")
+        print(f"Cloze Overlapper: Error regenerating note {note_id}: {e}")
+        return False
+
+
+def hookAnkiConnect():
+    """Hook into AnkiConnect to detect note updates"""
+    try:
+        # Try to find the AnkiConnect addon
+        ankiconnect_addon = None
+        for name in ["2055492159", "ankiconnect"]:
+            addon_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), name)
+            if os.path.exists(addon_dir):
+                ankiconnect_addon = addon_dir
+                break
+
+        if not ankiconnect_addon:
+            print("Cloze Overlapper: AnkiConnect not found, hook-based regeneration disabled")
+            return False
+
+        # Import AnkiConnect's module
+        import sys
+        if ankiconnect_addon not in sys.path:
+            sys.path.insert(0, os.path.dirname(ankiconnect_addon))
+
+        # Try to wrap AnkiConnect's updateNoteFields action
+        try:
+            import importlib
+            ac_module_name = os.path.basename(ankiconnect_addon)
+
+            # Get the AnkiConnect web module
+            ac_web = importlib.import_module(f"{ac_module_name}.web")
+
+            if hasattr(ac_web, 'AnkiConnect'):
+                original_updateNoteFields = getattr(ac_web.AnkiConnect, 'updateNoteFields', None)
+                original_updateNote = getattr(ac_web.AnkiConnect, 'updateNote', None)
+                original_updateNoteModel = getattr(ac_web.AnkiConnect, 'updateNoteModel', None)
+
+                olc_models = config["synced"].get("olmdls", [OLC_MODEL])
+
+                def wrapped_updateNoteFields(self, note):
+                    result = original_updateNoteFields(self, note)
+                    try:
+                        note_id = note.get('id')
+                        if note_id:
+                            # Check if it's an OLC model and regenerate
+                            col = mw.col
+                            if col:
+                                anki_note = col.getNote(note_id)
+                                model_name = anki_note.model()["name"]
+                                if model_name in olc_models:
+                                    mw.progress.timer(100, lambda: regenerateNoteById(note_id), False)
+                    except Exception as e:
+                        print(f"Cloze Overlapper: Error in updateNoteFields hook: {e}")
+                    return result
+
+                def wrapped_updateNote(self, note):
+                    result = original_updateNote(self, note)
+                    try:
+                        note_id = note.get('id')
+                        if note_id:
+                            col = mw.col
+                            if col:
+                                anki_note = col.getNote(note_id)
+                                model_name = anki_note.model()["name"]
+                                if model_name in olc_models:
+                                    mw.progress.timer(100, lambda: regenerateNoteById(note_id), False)
+                    except Exception as e:
+                        print(f"Cloze Overlapper: Error in updateNote hook: {e}")
+                    return result
+
+                def wrapped_updateNoteModel(self, note):
+                    result = original_updateNoteModel(self, note)
+                    try:
+                        note_id = note.get('id')
+                        if note_id:
+                            col = mw.col
+                            if col:
+                                anki_note = col.getNote(note_id)
+                                model_name = anki_note.model()["name"]
+                                if model_name in olc_models:
+                                    mw.progress.timer(100, lambda: regenerateNoteById(note_id), False)
+                    except Exception as e:
+                        print(f"Cloze Overlapper: Error in updateNoteModel hook: {e}")
+                    return result
+
+                if original_updateNoteFields:
+                    ac_web.AnkiConnect.updateNoteFields = wrapped_updateNoteFields
+                    print("Cloze Overlapper: Hooked into AnkiConnect.updateNoteFields")
+
+                if original_updateNote:
+                    ac_web.AnkiConnect.updateNote = wrapped_updateNote
+                    print("Cloze Overlapper: Hooked into AnkiConnect.updateNote")
+
+                if original_updateNoteModel:
+                    ac_web.AnkiConnect.updateNoteModel = wrapped_updateNoteModel
+                    print("Cloze Overlapper: Hooked into AnkiConnect.updateNoteModel")
+
+                return True
+
+        except Exception as e:
+            print(f"Cloze Overlapper: Could not hook AnkiConnect actions: {e}")
+            return False
+
+    except Exception as e:
+        print(f"Cloze Overlapper: Error setting up AnkiConnect hooks: {e}")
+        return False
 
 
 def initializeBatchRegeneration():
-    """Initialize batch regeneration to run on startup and on note updates"""
+    """Initialize batch regeneration on startup and hook into AnkiConnect"""
     from anki.hooks import addHook
 
     def onProfileLoaded():
         # Run regeneration after a short delay to let Anki fully load
         mw.progress.timer(1000, regenerateAllClozes, False)
 
+        # Try to hook into AnkiConnect for real-time regeneration
+        mw.progress.timer(2000, hookAnkiConnect, False)
+
     addHook("profileLoaded", onProfileLoaded)
-
-    # Hook into note updates to auto-regenerate when Original field changes
-    # This catches updates from AnkiConnect (Obsidian sync)
-    try:
-        from anki.hooks import wrap
-        from anki.notes import Note
-
-        # Wrap the flush method to detect note saves
-        original_flush = Note.flush
-
-        def wrapped_flush(self, *args, **kwargs):
-            result = original_flush(self, *args, **kwargs)
-            try:
-                onNoteUpdate(mw.col, self)
-            except Exception as e:
-                print(f"Cloze Overlapper: Error in flush hook: {e}")
-            return result
-
-        Note.flush = wrapped_flush
-        print("Cloze Overlapper: Initialized auto-regeneration on note updates")
-    except Exception as e:
-        print(f"Cloze Overlapper: Could not initialize note update hook: {e}")
