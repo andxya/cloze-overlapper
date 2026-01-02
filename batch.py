@@ -55,6 +55,14 @@ def _save_hashes(hashes):
         print(f"Error saving hash cache: {e}")
 
 
+def _get_field_value(note, field_name):
+    """Safely get a field value from a note using dictionary syntax."""
+    try:
+        return note[field_name]
+    except KeyError:
+        return ""
+
+
 def _needs_regeneration(note, flds, stored_hashes):
     """Check if a note needs regeneration.
 
@@ -64,9 +72,9 @@ def _needs_regeneration(note, flds, stored_hashes):
     """
     nid_str = str(note.id)
 
-    # Get field values
-    original = note.get(flds["og"], "").strip()
-    full = note.get(flds["fl"], "").strip()
+    # Get field values using dictionary syntax (Anki Note API)
+    original = _get_field_value(note, flds["og"]).strip()
+    full = _get_field_value(note, flds["fl"]).strip()
 
     # If Original is empty, nothing to regenerate
     if not original:
@@ -89,8 +97,8 @@ def _needs_regeneration(note, flds, stored_hashes):
 
 def _compute_note_hash(note, flds):
     """Compute hash of note's input fields (Original + Settings)"""
-    original = note.get(flds["og"], "")
-    settings = note.get(flds["st"], "")
+    original = _get_field_value(note, flds["og"])
+    settings = _get_field_value(note, flds["st"])
     content = f"{original}|{settings}"
     return hashlib.md5(content.encode("utf-8")).hexdigest()
 
@@ -214,7 +222,7 @@ def regenerateSingleNote(note):
         return False
 
     print(f"Cloze Overlapper: Regenerating note {note.id}...")
-    original = note.get(flds["og"], "")
+    original = _get_field_value(note, flds["og"])
     print(f"Cloze Overlapper: Original field content: {original[:100]}..." if len(original) > 100 else f"Cloze Overlapper: Original field content: {original}")
 
     # Regenerate clozes silently
