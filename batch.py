@@ -105,11 +105,14 @@ def regenerateAllClozes():
 
     col = mw.col
     if not col:
+        print("Cloze Overlapper: No collection available")
         return
 
     # Get all note type names that are OLC models
     olc_models = config["synced"].get("olmdls", [OLC_MODEL])
     flds = config["synced"]["flds"]
+    print(f"Cloze Overlapper: Looking for notes with types: {olc_models}")
+    print(f"Cloze Overlapper: Field config: og={flds.get('og')}, fl={flds.get('fl')}")
 
     # Find all notes using OLC note types
     note_ids = []
@@ -118,10 +121,16 @@ def regenerateAllClozes():
         if model:
             # Search for notes with this model
             nids = col.findNotes(f'"note:{model_name}"')
+            print(f"Cloze Overlapper: Found {len(nids)} notes with type '{model_name}'")
             note_ids.extend(nids)
+        else:
+            print(f"Cloze Overlapper: Model '{model_name}' not found in Anki")
 
     if not note_ids:
+        print("Cloze Overlapper: No notes found to process")
         return
+
+    print(f"Cloze Overlapper: Processing {len(note_ids)} total notes...")
 
     # Load stored hashes
     stored_hashes = _load_hashes()
@@ -137,9 +146,11 @@ def regenerateAllClozes():
         for i, nid in enumerate(note_ids):
             try:
                 note = col.getNote(nid)
+                model_name = note.model()["name"]
 
                 # Check if it's a valid OLC model
                 if not checkModel(note.model(), fields=True, notify=False):
+                    print(f"Cloze Overlapper: Skipping note {nid} - not a valid OLC model (type: {model_name})")
                     continue
 
                 # Check if regeneration is needed
@@ -148,6 +159,7 @@ def regenerateAllClozes():
                     continue
 
                 # Regenerate clozes silently
+                print(f"Cloze Overlapper: Attempting to regenerate note {nid} (type: {model_name})")
                 overlapper = ClozeOverlapper(note, silent=True)
                 ret, total = overlapper.add()
 
@@ -157,10 +169,15 @@ def regenerateAllClozes():
                     nid_str = str(nid)
                     current_hash = _compute_note_hash(note, flds)
                     stored_hashes[nid_str] = current_hash
+                    print(f"Cloze Overlapper: Successfully regenerated note {nid}")
+                else:
+                    print(f"Cloze Overlapper: ClozeOverlapper.add() returned False for note {nid}")
 
             except Exception as e:
                 errors += 1
-                print(f"Error regenerating note {nid}: {e}")
+                print(f"Cloze Overlapper ERROR: Failed to regenerate note {nid}: {e}")
+                import traceback
+                traceback.print_exc()
 
             mw.progress.update(value=i + 1)
             QApplication.processEvents()
