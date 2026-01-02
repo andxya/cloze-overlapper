@@ -68,21 +68,21 @@ def _needs_regeneration(note, flds, stored_hashes):
 
     Returns True if:
     - Original field hash changed
-    - OR Original field has content but Full field is empty
+    - OR Original field has content but Settings field is empty (never generated)
     """
     nid_str = str(note.id)
 
     # Get field values using dictionary syntax (Anki Note API)
     original = _get_field_value(note, flds["og"]).strip()
-    full = _get_field_value(note, flds["fl"]).strip()
+    settings = _get_field_value(note, flds["st"]).strip()
 
     # If Original is empty, nothing to regenerate
     if not original:
         return False
 
-    # Check if Full field is empty but Original has content
-    if not full:
-        print(f"Cloze Overlapper: Note {note.id} needs regeneration (Full field is empty)")
+    # Check if Settings field is empty but Original has content (never generated)
+    if not settings:
+        print(f"Cloze Overlapper: Note {note.id} needs regeneration (Settings field is empty)")
         return True
 
     # Check if hash changed
