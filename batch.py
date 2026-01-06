@@ -103,10 +103,11 @@ def _compute_note_hash(note, flds):
     return hashlib.md5(content.encode("utf-8")).hexdigest()
 
 
-def regenerateAllClozes():
+def regenerateAllClozes(force=False):
     """Regenerate overlapping clozes for notes that need it.
 
     Regenerates if:
+    - force=True (regenerate all regardless of hash)
     - Original field hash changed since last regeneration
     - OR Original field has content but Full field is empty
     """
@@ -140,15 +141,19 @@ def regenerateAllClozes():
 
     print(f"Cloze Overlapper: Processing {len(note_ids)} total notes...")
 
-    # Load stored hashes
-    stored_hashes = _load_hashes()
+    # Load stored hashes (or clear if forcing)
+    if force:
+        stored_hashes = {}
+        print("Cloze Overlapper: Force regeneration - clearing hash cache")
+    else:
+        stored_hashes = _load_hashes()
 
-    # Process each note - only if changed or Full is empty
+    # Process each note - only if changed or Full is empty (or force=True)
     updated = 0
     skipped = 0
     errors = 0
 
-    mw.progress.start(max=len(note_ids), label="Checking overlapping clozes...")
+    mw.progress.start(max=len(note_ids), label="Regenerating overlapping clozes..." if force else "Checking overlapping clozes...")
 
     try:
         for i, nid in enumerate(note_ids):
@@ -161,8 +166,8 @@ def regenerateAllClozes():
                     print(f"Cloze Overlapper: Skipping note {nid} - not a valid OLC model (type: {model_name})")
                     continue
 
-                # Check if regeneration is needed
-                if not _needs_regeneration(note, flds, stored_hashes):
+                # Check if regeneration is needed (skip check if force=True)
+                if not force and not _needs_regeneration(note, flds, stored_hashes):
                     skipped += 1
                     continue
 
@@ -284,7 +289,7 @@ def hookAnkiConnect():
             print("Cloze Overlapper: AnkiConnect not found in loaded modules, hook-based regeneration disabled")
             return False
 
-        # Hook into AnkiConnect's update methods
+        # Hook into AnkiConnect's update methods (not add - let Cloze Overlapper handle new notes manually)
         original_updateNoteFields = getattr(ac_web.AnkiConnect, 'updateNoteFields', None)
         original_updateNote = getattr(ac_web.AnkiConnect, 'updateNote', None)
         original_updateNoteModel = getattr(ac_web.AnkiConnect, 'updateNoteModel', None)
@@ -303,7 +308,7 @@ def hookAnkiConnect():
                         model_name = anki_note.model()["name"]
                         if model_name in olc_models:
                             print(f"Cloze Overlapper: updateNoteFields hook triggered for note {note_id}")
-                            mw.progress.timer(100, lambda: regenerateNoteById(note_id), False)
+                            mw.progress.timer(100, lambda n=note_id: regenerateNoteById(n), False)
             except Exception as e:
                 print(f"Cloze Overlapper: Error in updateNoteFields hook: {e}")
             return result
@@ -319,7 +324,7 @@ def hookAnkiConnect():
                         model_name = anki_note.model()["name"]
                         if model_name in olc_models:
                             print(f"Cloze Overlapper: updateNote hook triggered for note {note_id}")
-                            mw.progress.timer(100, lambda: regenerateNoteById(note_id), False)
+                            mw.progress.timer(100, lambda n=note_id: regenerateNoteById(n), False)
             except Exception as e:
                 print(f"Cloze Overlapper: Error in updateNote hook: {e}")
             return result
@@ -335,7 +340,7 @@ def hookAnkiConnect():
                         model_name = anki_note.model()["name"]
                         if model_name in olc_models:
                             print(f"Cloze Overlapper: updateNoteModel hook triggered for note {note_id}")
-                            mw.progress.timer(100, lambda: regenerateNoteById(note_id), False)
+                            mw.progress.timer(100, lambda n=note_id: regenerateNoteById(n), False)
             except Exception as e:
                 print(f"Cloze Overlapper: Error in updateNoteModel hook: {e}")
             return result
@@ -361,15 +366,143 @@ def hookAnkiConnect():
         return False
 
 
+def registerAnkiConnectActions():
+    """Register custom AnkiConnect actions for Cloze Overlapper"""
+    try:
+        import sys
+
+        # Find AnkiConnect module
+        ac_module = None
+        for module_name, module in sys.modules.items():
+            if module and hasattr(module, 'AnkiConnect'):
+                ac_module = module
+                print(f"Cloze Overlapper: Found AnkiConnect module for custom actions: {module_name}")
+                break
+
+        if not ac_module:
+            print("Cloze Overlapper: AnkiConnect not found, custom actions not registered")
+            return False
+
+        AnkiConnect = ac_module.AnkiConnect
+
+        # Add custom action: clozeOverlapperRegenerate
+        def clozeOverlapperRegenerate(self, noteId=None, noteIds=None):
+            """Regenerate overlapping clozes for specified note(s)
+
+            Args:
+                noteId: Single note ID to regenerate
+                noteIds: List of note IDs to regenerate
+
+            Returns:
+                dict with 'regenerated' count and 'errors' list
+            """
+            results = {"regenerated": 0, "skipped": 0, "errors": []}
+
+            ids_to_process = []
+            if noteId:
+                ids_to_process.append(noteId)
+            if noteIds:
+                ids_to_process.extend(noteIds)
+
+            if not ids_to_process:
+                # Regenerate all if no IDs specified
+                regenerateAllClozes()
+                return {"message": "Triggered regenerateAllClozes"}
+
+            for nid in ids_to_process:
+                try:
+                    if regenerateNoteById(nid):
+                        results["regenerated"] += 1
+                    else:
+                        results["skipped"] += 1
+                except Exception as e:
+                    results["errors"].append(f"Note {nid}: {str(e)}")
+
+            return results
+
+        # Add the method to AnkiConnect class
+        AnkiConnect.clozeOverlapperRegenerate = clozeOverlapperRegenerate
+        print("Cloze Overlapper: Registered custom AnkiConnect action 'clozeOverlapperRegenerate'")
+
+        return True
+
+    except Exception as e:
+        print(f"Cloze Overlapper: Error registering custom AnkiConnect actions: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def regenerateEmptySettingsNotes():
+    """Regenerate clozes for notes with empty Settings field (new notes from AnkiConnect).
+
+    This runs on startup to catch any notes added via Obsidian_to_Anki that weren't
+    regenerated automatically.
+    """
+    col = mw.col
+    if not col:
+        return
+
+    olc_models = config["synced"].get("olmdls", [OLC_MODEL])
+    flds = config["synced"]["flds"]
+    settings_field = flds.get("st", "Settings")
+
+    # Find notes with empty Settings field
+    notes_to_regenerate = []
+    for model_name in olc_models:
+        model = col.models.byName(model_name)
+        if model:
+            # Search for notes with this model that have empty Settings field
+            nids = col.findNotes(f'"note:{model_name}" "{settings_field}:"')
+            for nid in nids:
+                try:
+                    note = col.getNote(nid)
+                    settings_value = _get_field_value(note, settings_field).strip()
+                    original_value = _get_field_value(note, flds.get("og", "Original")).strip()
+                    # Only regenerate if Original has content but Settings is empty
+                    if original_value and not settings_value:
+                        notes_to_regenerate.append(nid)
+                except Exception:
+                    pass
+
+    if not notes_to_regenerate:
+        return
+
+    print(f"Cloze Overlapper: Found {len(notes_to_regenerate)} notes with empty Settings field, regenerating...")
+
+    updated = 0
+    for nid in notes_to_regenerate:
+        try:
+            note = col.getNote(nid)
+            if checkModel(note.model(), fields=True, notify=False):
+                overlapper = ClozeOverlapper(note, silent=True)
+                ret, total = overlapper.add()
+                if ret:
+                    updated += 1
+                    print(f"Cloze Overlapper: Regenerated note {nid}")
+        except Exception as e:
+            print(f"Cloze Overlapper: Error regenerating note {nid}: {e}")
+
+    if updated > 0:
+        tooltip(f"Cloze Overlapper: Regenerated {updated} new notes on startup", period=3000)
+
+
 def initializeBatchRegeneration():
-    """Initialize batch regeneration on startup and hook into AnkiConnect"""
+    """Initialize batch regeneration on startup.
+
+    Note: Real-time hooks are DISABLED to prevent corruption during Obsidian sync.
+    Only startup regeneration for notes with empty Settings field is enabled.
+    """
     from anki.hooks import addHook
 
     def onProfileLoaded():
-        # Run regeneration after a short delay to let Anki fully load
-        mw.progress.timer(1000, regenerateAllClozes, False)
+        # NOTE: hookAnkiConnect() is disabled to prevent corruption during Obsidian sync.
+        # The update hooks (updateNoteFields, updateNote, updateNoteModel) were causing
+        # "ad-ovlap" text to be inserted randomly into content.
 
-        # Try to hook into AnkiConnect for real-time regeneration
-        mw.progress.timer(2000, hookAnkiConnect, False)
+        # Register custom AnkiConnect actions (for manual regeneration if needed)
+        mw.progress.timer(3000, registerAnkiConnectActions, False)
+        # Regenerate any notes with empty Settings field (new notes from Obsidian sync)
+        mw.progress.timer(3500, regenerateEmptySettingsNotes, False)
 
     addHook("profileLoaded", onProfileLoaded)
