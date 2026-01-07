@@ -120,7 +120,7 @@ def initializeAddon():
         # Initialize batch regeneration (on startup + on note updates)
         from .batch import initializeBatchRegeneration, regenerateAllClozes
         initializeBatchRegeneration()
-        # Also run a full check on startup after a delay
+        # Check for cards needing regeneration (empty Settings field)
         mw.progress.timer(2000, regenerateAllClozes, False)
 
     addHook("profileLoaded", delayedInit)

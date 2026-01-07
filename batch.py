@@ -424,6 +424,49 @@ def registerAnkiConnectActions():
         AnkiConnect.clozeOverlapperRegenerate = clozeOverlapperRegenerate
         print("Cloze Overlapper: Registered custom AnkiConnect action 'clozeOverlapperRegenerate'")
 
+        # Add custom action: removeEmptyCards
+        def removeEmptyCards(self):
+            """Remove all empty cards from the collection.
+
+            This is equivalent to Tools > Empty Cards in Anki's GUI.
+            Empty cards are cards where the front or back template produces no content.
+
+            Returns:
+                dict with 'removed' count
+            """
+            col = mw.col
+            if not col:
+                return {"removed": 0, "error": "No collection available"}
+
+            try:
+                # Get empty cards - this returns card IDs
+                # In Anki 2.1.28+, col.empty_cards() returns a list of (card_id, note_id, ...)
+                empty_info = col.empty_cards()
+
+                if not empty_info:
+                    print("Cloze Overlapper: No empty cards found")
+                    return {"removed": 0}
+
+                # Extract card IDs (first element of each tuple)
+                card_ids = [info[0] for info in empty_info]
+
+                if card_ids:
+                    # Remove the empty cards
+                    col.remove_cards_and_orphaned_notes(card_ids)
+                    print(f"Cloze Overlapper: Removed {len(card_ids)} empty cards")
+                    return {"removed": len(card_ids)}
+
+                return {"removed": 0}
+
+            except Exception as e:
+                print(f"Cloze Overlapper: Error removing empty cards: {e}")
+                import traceback
+                traceback.print_exc()
+                return {"removed": 0, "error": str(e)}
+
+        AnkiConnect.removeEmptyCards = removeEmptyCards
+        print("Cloze Overlapper: Registered custom AnkiConnect action 'removeEmptyCards'")
+
         return True
 
     except Exception as e:

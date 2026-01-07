@@ -101,6 +101,15 @@ class ClozeOverlapper(object):
 
         # Overlapping cloze mode - original behavior
         if oc_matches:
+            # Check if there's only one unique cloze number
+            unique_cloze_nums = set(m[0] for m in oc_matches)
+            if len(unique_cloze_nums) == 1:
+                # Single overlapping cloze - convert to regular cloze in Text1
+                self.handleSingleOverlappingCloze(original, oc_matches)
+                if not self.silent:
+                    self.showTT("Info", "Single cloze mode - using Text1 field", period=1000)
+                return True, 1
+
             custom = True
             formstr = re.sub(self.creg, "{{\\1}}", original)
             items, keys = self.getClozeItems(oc_matches)
@@ -146,7 +155,7 @@ class ClozeOverlapper(object):
     def handleRegularCloze(self, original):
         """Handle regular Anki clozes - content stays in Original field"""
         note = self.note
-        
+
         # Clear all Text1-20 fields so they don't interfere
         maxfields = self.getMaxFields(self.model, self.flds["tx"])
         if maxfields:
@@ -154,16 +163,51 @@ class ClozeOverlapper(object):
                 name = self.flds["tx"] + str(idx + 1)
                 if name in note:
                     note[name] = ""
-        
+
         # Clear Full field so it doesn't show duplicate content
         note[self.flds["fl"]] = ""
-        
+
         # Clear settings since they don't apply to regular clozes
         note[self.flds["st"]] = ""
-        
+
         # Original field already contains the cloze content - leave it as is
         # The template will render {{cloze:Original}} to display the clozes
-        
+
+        if note.id != 0:
+            note.flush()
+
+    def handleSingleOverlappingCloze(self, original, oc_matches):
+        """Handle single overlapping cloze - convert to regular cloze in Text1 only.
+
+        When there's only one overlapping cloze (e.g., {{o1::text}}), we don't need
+        the full overlapping cloze machinery. Instead, just convert it to {{c1::text}}
+        and put it in Text1.
+        """
+        note = self.note
+
+        # Convert {{o1::text}} to {{c1::text}} in the original content
+        converted = re.sub(self.creg, r"{{c\1::\2}}", original)
+
+        # Put converted content in Text1
+        text1_field = self.flds["tx"] + "1"
+        if text1_field in note:
+            note[text1_field] = converted
+
+        # Clear Text2-20 fields
+        maxfields = self.getMaxFields(self.model, self.flds["tx"])
+        if maxfields:
+            for idx in range(1, maxfields):  # Start from 1 (Text2) since Text1 is used
+                name = self.flds["tx"] + str(idx + 1)
+                if name in note:
+                    note[name] = ""
+
+        # Clear Full field (not needed for single cloze)
+        note[self.flds["fl"]] = ""
+
+        # Set a sensible Settings field: "1,1,0 | n,n,n,y"
+        # (before=1, prompt=1, after=0, no special options, no full cloze)
+        note[self.flds["st"]] = "single"
+
         if note.id != 0:
             note.flush()
 
